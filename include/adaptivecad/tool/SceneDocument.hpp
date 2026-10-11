@@ -59,11 +59,17 @@ struct SceneBody {
     bool has_color = false;
 };
 
+struct SceneMetadataEntry {
+    std::string key;
+    std::string value;
+};
+
 struct SceneDocument {
     std::string scene_label;
     SceneSourceKind source_kind = SceneSourceKind::Demo;
     std::filesystem::path source_path;
     core::AngularWeightModel angular_model;
+    std::vector<SceneMetadataEntry> metadata;
     std::vector<SceneMaterial> materials;
     std::vector<SceneBody> bodies;
 };

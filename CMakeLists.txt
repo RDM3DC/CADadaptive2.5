@@ -44,6 +44,8 @@ add_library(adaptivecad_geometry
 )
 
 add_library(adaptivecad_tool
+    src/tool/CurveMemoryBank.cpp
+    src/tool/CurveMemoryScene.cpp
     src/tool/MetamaterialScaffold.cpp
     src/tool/SceneDocument.cpp
     src/tool/SessionBundleIO.cpp
@@ -101,7 +103,13 @@ adaptivecad_enable_warnings(adaptivecad_geometry)
 adaptivecad_enable_warnings(adaptivecad_tool)
 
 if(ADAPTIVECAD_BUILD_CLI)
-    add_executable(adaptivecad_cli src/app/main.cpp)
+    add_executable(adaptivecad_cli src/app/main.cpp src/app/CurveMemoryCommand.cpp src/app/CurveMemoryProcessCommand.cpp)
+    if(WIN32)
+        target_link_libraries(adaptivecad_cli PRIVATE psapi)
+    endif()
+    if(MINGW)
+        target_link_options(adaptivecad_cli PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
     target_link_libraries(adaptivecad_cli PRIVATE adaptivecad_core adaptivecad_geometry adaptivecad_tool)
     adaptivecad_enable_warnings(adaptivecad_cli)
     set_target_properties(adaptivecad_cli PROPERTIES OUTPUT_NAME "adaptivecad")
@@ -119,6 +127,18 @@ endif()
 
 if(ADAPTIVECAD_BUILD_TESTS)
     enable_testing()
+    foreach(test_kind IN ITEMS bank scene)
+        add_executable(adaptivecad_curve_memory_${test_kind}_tests tests/test_curve_memory_${test_kind}.cpp)
+        target_link_libraries(adaptivecad_curve_memory_${test_kind}_tests PRIVATE adaptivecad_tool)
+        adaptivecad_enable_warnings(adaptivecad_curve_memory_${test_kind}_tests)
+        if(MSVC)
+            target_compile_options(adaptivecad_curve_memory_${test_kind}_tests PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(adaptivecad_curve_memory_${test_kind}_tests PRIVATE -UNDEBUG)
+        endif()
+        add_test(NAME adaptivecad_curve_memory_${test_kind}_tests COMMAND adaptivecad_curve_memory_${test_kind}_tests)
+    endforeach()
+
 
     add_executable(adaptivecad_tests tests/test_adaptive_field.cpp)
     target_link_libraries(adaptivecad_tests PRIVATE adaptivecad_core)
@@ -156,7 +176,31 @@ if(ADAPTIVECAD_BUILD_TESTS)
 
     add_test(NAME adaptivecad_scaffold_tests COMMAND adaptivecad_scaffold_tests)
 
+    # Retain meaningful regression checks in optimized benchmark builds.
+    foreach(test_target IN ITEMS adaptivecad_tests adaptivecad_geometry_tests
+            adaptivecad_brep_tests adaptivecad_history_tests adaptivecad_tool_tests adaptivecad_scaffold_tests)
+        if(MSVC)
+            target_compile_options(${test_target} PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(${test_target} PRIVATE -UNDEBUG)
+        endif()
+    endforeach()
+
     if(TARGET adaptivecad_cli)
+        foreach(storage_policy IN ITEMS raw auto)
+            add_test(NAME adaptivecad_cli_curve_memory_process_${storage_policy}
+                COMMAND adaptivecad_cli --curve-memory-process --storage ${storage_policy}
+                    --model torus --size 64 --instances 2
+                    --report-json "${CMAKE_CURRENT_BINARY_DIR}/curve_memory_process_${storage_policy}.json")
+            set_tests_properties(adaptivecad_cli_curve_memory_process_${storage_policy} PROPERTIES TIMEOUT 120)
+        endforeach()
+        add_test(NAME adaptivecad_cli_curve_memory_demo
+            COMMAND adaptivecad_cli --curve-memory-demo --instances 8
+                --report-json "${CMAKE_CURRENT_BINARY_DIR}/curve_memory_demo.json")
+        add_test(NAME adaptivecad_cli_curve_memory_import
+            COMMAND adaptivecad_cli --curve-memory "${CMAKE_CURRENT_SOURCE_DIR}/samples/simple_wedge.stl"
+                --cache-blocks 0 --output "${CMAKE_CURRENT_BINARY_DIR}/curve_memory_wedge.obj"
+                --report-json "${CMAKE_CURRENT_BINARY_DIR}/curve_memory_wedge.json")
         add_test(NAME adaptivecad_cli_version COMMAND adaptivecad_cli --version)
         set_tests_properties(adaptivecad_cli_version PROPERTIES
             PASS_REGULAR_EXPRESSION "AdaptiveCAD ${PROJECT_VERSION}")
@@ -230,6 +274,8 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/adaptivecad/Version.hpp"
 install(DIRECTORY samples DESTINATION "${CMAKE_INSTALL_DATADIR}/adaptivecad")
 install(FILES README.md COMMERCIALIZATION.md adaptive_cad_flat_adasccsc.md
     DESTINATION "${CMAKE_INSTALL_DATADIR}/adaptivecad")
+
+install(FILES docs/CURVE_MEMORY.md DESTINATION "${CMAKE_INSTALL_DATADIR}/adaptivecad/docs")
 
 set(CPACK_PACKAGE_NAME "AdaptiveCAD")
 set(CPACK_PACKAGE_VENDOR "AdaptiveCAD")

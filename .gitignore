@@ -1,5 +1,6 @@
 # Build folders
 build/
+build-*/
 out/
 _CPack_Packages/
 
