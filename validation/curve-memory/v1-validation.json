@@ -1,0 +1,366 @@
+{
+  "benchmark_cases_passed": 6,
+  "invalid_cli_cases_passed": 8,
+  "source_unchanged": true,
+  "reports": {
+    "torus128": {
+      "schema": "adaptivecad.curve-memory-benchmark.v1",
+      "mode": "native_torus_demo",
+      "source": "native torus, 128 x 32 segments",
+      "measurement_scope": "Estimated capacity bytes for scene representation; excludes benchmark inputs, verification copies, allocator bookkeeping and process overhead. Cache is included.",
+      "baseline": "Ordinary shared unique float64 point arrays with identical topology, instance matrices, sparse overrides and relations.",
+      "source_float64_and_face_indices_round_trip": true,
+      "benchmark_checksums_match": true,
+      "unique_shapes": 1,
+      "instances": 128,
+      "relations": 1,
+      "sparse_overrides": 1,
+      "logical_expanded_point_bytes": 12582912,
+      "estimated_capacity_bytes": {
+        "compressed_scene_cache_empty": 757774,
+        "compressed_scene_after_reads": 757774,
+        "compressed_scene_full_cache_bound": 757774,
+        "ordinary_shared_scene": 759232,
+        "cache_after_reads": 0,
+        "cache_limit": 0
+      },
+      "encoded_point_payload_bytes": 96134,
+      "raw_blocks": 0,
+      "compressed_blocks": 16,
+      "timing_note": "Fixed deterministic query lists; three repeats; total wall-clock milliseconds including checksum work. Cold clears cache before each repeat. Warm-start uses a prepass but may still miss when the working set exceeds cache capacity.",
+      "read_timings": {
+        "ordinary_shared_random": {
+          "total_ms": 0.3468,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "93f08f33366b6442"
+        },
+        "compressed_random_cold": {
+          "total_ms": 61.16969999999999,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "93f08f33366b6442"
+        },
+        "compressed_random_warm_start": {
+          "total_ms": 60.523399999999995,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "93f08f33366b6442"
+        },
+        "ordinary_shared_sequential": {
+          "total_ms": 1.0687,
+          "queries_per_repeat": 32768,
+          "repeats": 3,
+          "checksum_hex": "7dd09701f64aca90"
+        },
+        "compressed_sequential_cold": {
+          "total_ms": 247.7278,
+          "queries_per_repeat": 32768,
+          "repeats": 3,
+          "checksum_hex": "7dd09701f64aca90"
+        }
+      },
+      "export": null
+    },
+    "civil": {
+      "schema": "adaptivecad.curve-memory-benchmark.v1",
+      "mode": "imported_scene",
+      "source": "samples/civil_grading_example.obj",
+      "measurement_scope": "Estimated capacity bytes for scene representation; excludes benchmark inputs, verification copies, allocator bookkeeping and process overhead. Cache is included.",
+      "baseline": "Ordinary shared unique float64 point arrays with identical topology, instance matrices, sparse overrides and relations.",
+      "source_float64_and_face_indices_round_trip": true,
+      "benchmark_checksums_match": true,
+      "unique_shapes": 3,
+      "instances": 3,
+      "relations": 0,
+      "sparse_overrides": 0,
+      "logical_expanded_point_bytes": 15552,
+      "estimated_capacity_bytes": {
+        "compressed_scene_cache_empty": 50548,
+        "compressed_scene_after_reads": 51356,
+        "compressed_scene_full_cache_bound": 56732,
+        "ordinary_shared_scene": 57799,
+        "cache_after_reads": 808,
+        "cache_limit": 6184
+      },
+      "encoded_point_payload_bytes": 7957,
+      "raw_blocks": 0,
+      "compressed_blocks": 5,
+      "timing_note": "Fixed deterministic query lists; three repeats; total wall-clock milliseconds including checksum work. Cold clears cache before each repeat. Warm-start uses a prepass but may still miss when the working set exceeds cache capacity.",
+      "read_timings": {
+        "ordinary_shared_random": {
+          "total_ms": 0.2644,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f71ce9d4ff5a55a6"
+        },
+        "compressed_random_cold": {
+          "total_ms": 18.507199999999997,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f71ce9d4ff5a55a6"
+        },
+        "compressed_random_warm_start": {
+          "total_ms": 17.822499999999998,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f71ce9d4ff5a55a6"
+        },
+        "ordinary_shared_sequential": {
+          "total_ms": 0.0214,
+          "queries_per_repeat": 648,
+          "repeats": 3,
+          "checksum_hex": "9a5be1b089f23d4a"
+        },
+        "compressed_sequential_cold": {
+          "total_ms": 0.0414,
+          "queries_per_repeat": 648,
+          "repeats": 3,
+          "checksum_hex": "9a5be1b089f23d4a"
+        }
+      },
+      "export": null
+    },
+    "benchy": {
+      "schema": "adaptivecad.curve-memory-benchmark.v1",
+      "mode": "imported_scene",
+      "source": "models/benchy_framework/3DBenchy_framework.stl",
+      "measurement_scope": "Estimated capacity bytes for scene representation; excludes benchmark inputs, verification copies, allocator bookkeeping and process overhead. Cache is included.",
+      "baseline": "Ordinary shared unique float64 point arrays with identical topology, instance matrices, sparse overrides and relations.",
+      "source_float64_and_face_indices_round_trip": true,
+      "benchmark_checksums_match": true,
+      "unique_shapes": 1,
+      "instances": 1,
+      "relations": 0,
+      "sparse_overrides": 0,
+      "logical_expanded_point_bytes": 1441392,
+      "estimated_capacity_bytes": {
+        "compressed_scene_cache_empty": 18605192,
+        "compressed_scene_after_reads": 18629928,
+        "compressed_scene_full_cache_bound": 18629928,
+        "ordinary_shared_scene": 18741204,
+        "cache_after_reads": 24736,
+        "cache_limit": 24736
+      },
+      "encoded_point_payload_bytes": 1295908,
+      "raw_blocks": 0,
+      "compressed_blocks": 235,
+      "timing_note": "Fixed deterministic query lists; three repeats; total wall-clock milliseconds including checksum work. Cold clears cache before each repeat. Warm-start uses a prepass but may still miss when the working set exceeds cache capacity.",
+      "read_timings": {
+        "ordinary_shared_random": {
+          "total_ms": 0.746,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f38fe259b3dcdbcf"
+        },
+        "compressed_random_cold": {
+          "total_ms": 83.5009,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f38fe259b3dcdbcf"
+        },
+        "compressed_random_warm_start": {
+          "total_ms": 83.6128,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f38fe259b3dcdbcf"
+        },
+        "ordinary_shared_sequential": {
+          "total_ms": 1.0514000000000001,
+          "queries_per_repeat": 32768,
+          "repeats": 3,
+          "checksum_hex": "a8682259499ce091"
+        },
+        "compressed_sequential_cold": {
+          "total_ms": 3.1298,
+          "queries_per_repeat": 32768,
+          "repeats": 3,
+          "checksum_hex": "a8682259499ce091"
+        }
+      },
+      "export": null
+    },
+    "duplicates": {
+      "schema": "adaptivecad.curve-memory-benchmark.v1",
+      "mode": "imported_scene",
+      "source": "build-curve-memory\\duplicate-shapes.obj",
+      "measurement_scope": "Estimated capacity bytes for scene representation; excludes benchmark inputs, verification copies, allocator bookkeeping and process overhead. Cache is included.",
+      "baseline": "Ordinary shared unique float64 point arrays with identical topology, instance matrices, sparse overrides and relations.",
+      "source_float64_and_face_indices_round_trip": true,
+      "benchmark_checksums_match": true,
+      "unique_shapes": 1,
+      "instances": 2,
+      "relations": 0,
+      "sparse_overrides": 0,
+      "logical_expanded_point_bytes": 144,
+      "estimated_capacity_bytes": {
+        "compressed_scene_cache_empty": 1427,
+        "compressed_scene_after_reads": 1427,
+        "compressed_scene_full_cache_bound": 1427,
+        "ordinary_shared_scene": 1351,
+        "cache_after_reads": 0,
+        "cache_limit": 0
+      },
+      "encoded_point_payload_bytes": 36,
+      "raw_blocks": 0,
+      "compressed_blocks": 1,
+      "timing_note": "Fixed deterministic query lists; three repeats; total wall-clock milliseconds including checksum work. Cold clears cache before each repeat. Warm-start uses a prepass but may still miss when the working set exceeds cache capacity.",
+      "read_timings": {
+        "ordinary_shared_random": {
+          "total_ms": 0.2712,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "15b2ac1b08ca8383"
+        },
+        "compressed_random_cold": {
+          "total_ms": 1.4837,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "15b2ac1b08ca8383"
+        },
+        "compressed_random_warm_start": {
+          "total_ms": 1.4828000000000001,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "15b2ac1b08ca8383"
+        },
+        "ordinary_shared_sequential": {
+          "total_ms": 0.00030000000000000003,
+          "queries_per_repeat": 6,
+          "repeats": 3,
+          "checksum_hex": "8e4219b1e8e4e26b"
+        },
+        "compressed_sequential_cold": {
+          "total_ms": 0.0012000000000000001,
+          "queries_per_repeat": 6,
+          "repeats": 3,
+          "checksum_hex": "8e4219b1e8e4e26b"
+        }
+      },
+      "export": null
+    },
+    "noise": {
+      "schema": "adaptivecad.curve-memory-benchmark.v1",
+      "mode": "imported_scene",
+      "source": "build-curve-memory\\noisy-points.obj",
+      "measurement_scope": "Estimated capacity bytes for scene representation; excludes benchmark inputs, verification copies, allocator bookkeeping and process overhead. Cache is included.",
+      "baseline": "Ordinary shared unique float64 point arrays with identical topology, instance matrices, sparse overrides and relations.",
+      "source_float64_and_face_indices_round_trip": true,
+      "benchmark_checksums_match": true,
+      "unique_shapes": 1,
+      "instances": 1,
+      "relations": 0,
+      "sparse_overrides": 0,
+      "logical_expanded_point_bytes": 73728,
+      "estimated_capacity_bytes": {
+        "compressed_scene_cache_empty": 222127,
+        "compressed_scene_after_reads": 222127,
+        "compressed_scene_full_cache_bound": 222127,
+        "ordinary_shared_scene": 222015,
+        "cache_after_reads": 0,
+        "cache_limit": 0
+      },
+      "encoded_point_payload_bytes": 73728,
+      "raw_blocks": 1,
+      "compressed_blocks": 0,
+      "timing_note": "Fixed deterministic query lists; three repeats; total wall-clock milliseconds including checksum work. Cold clears cache before each repeat. Warm-start uses a prepass but may still miss when the working set exceeds cache capacity.",
+      "read_timings": {
+        "ordinary_shared_random": {
+          "total_ms": 0.2728,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "e638d413b8b21638"
+        },
+        "compressed_random_cold": {
+          "total_ms": 0.5266,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "e638d413b8b21638"
+        },
+        "compressed_random_warm_start": {
+          "total_ms": 0.5196000000000001,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "e638d413b8b21638"
+        },
+        "ordinary_shared_sequential": {
+          "total_ms": 0.0983,
+          "queries_per_repeat": 3072,
+          "repeats": 3,
+          "checksum_hex": "b2a59b50658caa53"
+        },
+        "compressed_sequential_cold": {
+          "total_ms": 0.18330000000000002,
+          "queries_per_repeat": 3072,
+          "repeats": 3,
+          "checksum_hex": "b2a59b50658caa53"
+        }
+      },
+      "export": null
+    },
+    "tori_export": {
+      "schema": "adaptivecad.curve-memory-benchmark.v1",
+      "mode": "native_torus_demo",
+      "source": "native torus, 128 x 32 segments",
+      "measurement_scope": "Estimated capacity bytes for scene representation; excludes benchmark inputs, verification copies, allocator bookkeeping and process overhead. Cache is included.",
+      "baseline": "Ordinary shared unique float64 point arrays with identical topology, instance matrices, sparse overrides and relations.",
+      "source_float64_and_face_indices_round_trip": true,
+      "benchmark_checksums_match": true,
+      "unique_shapes": 1,
+      "instances": 8,
+      "relations": 1,
+      "sparse_overrides": 1,
+      "logical_expanded_point_bytes": 786432,
+      "estimated_capacity_bytes": {
+        "compressed_scene_cache_empty": 722254,
+        "compressed_scene_after_reads": 722254,
+        "compressed_scene_full_cache_bound": 722254,
+        "ordinary_shared_scene": 723712,
+        "cache_after_reads": 0,
+        "cache_limit": 0
+      },
+      "encoded_point_payload_bytes": 96134,
+      "raw_blocks": 0,
+      "compressed_blocks": 16,
+      "timing_note": "Fixed deterministic query lists; three repeats; total wall-clock milliseconds including checksum work. Cold clears cache before each repeat. Warm-start uses a prepass but may still miss when the working set exceeds cache capacity.",
+      "read_timings": {
+        "ordinary_shared_random": {
+          "total_ms": 0.315,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f867430d17f08f0c"
+        },
+        "compressed_random_cold": {
+          "total_ms": 62.0051,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f867430d17f08f0c"
+        },
+        "compressed_random_warm_start": {
+          "total_ms": 61.211200000000005,
+          "queries_per_repeat": 8192,
+          "repeats": 3,
+          "checksum_hex": "f867430d17f08f0c"
+        },
+        "ordinary_shared_sequential": {
+          "total_ms": 1.0388,
+          "queries_per_repeat": 32768,
+          "repeats": 3,
+          "checksum_hex": "1c5614089b57bf1a"
+        },
+        "compressed_sequential_cold": {
+          "total_ms": 237.24630000000002,
+          "queries_per_repeat": 32768,
+          "repeats": 3,
+          "checksum_hex": "1c5614089b57bf1a"
+        }
+      },
+      "export": {
+        "path": "build-curve-memory\\curve_memory_tori.obj",
+        "all_instance_points_verified": true,
+        "materialization_ms": 2.9527,
+        "obj_write_ms": 136.6878
+      }
+    }
+  }
+}
