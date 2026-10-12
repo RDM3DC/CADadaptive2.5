@@ -1,6 +1,7 @@
 #include "adaptivecad/Version.hpp"
 #include "CurveMemoryCommand.hpp"
 #include "CurveMemoryProcessCommand.hpp"
+#include "CurveMemoryWorkloadCommand.hpp"
 #include "adaptivecad/core/AdaptiveField.hpp"
 #include "adaptivecad/core/InverseRecovery.hpp"
 #include "adaptivecad/geometry/BRepKernel.hpp"
@@ -44,6 +45,7 @@ void print_usage(std::ostream& output) {
     output << "  --curve-memory <path>          Native exact sampled-point storage benchmark\n";
     output << "  --curve-memory-demo            Shared native torus/matrix demo\n";
     output << "  --curve-memory-process         Isolated process RAM: --storage raw|auto --model torus|dense-curves|input\n";
+    output << "  --curve-memory-workload        Compare LRU/ARP caches and retained parametric curves\n";
     output << "  Curve options: --cache-blocks N --storage auto|raw --report-json PATH\n";
     output << "  Demo: --instances N --output OBJ; process: --size N --instances N --input PATH\n";
     output << "  --help                         Show this help text\n";
@@ -580,6 +582,8 @@ int main(int argc, char** argv) {
         const std::string command = argv[1] ? argv[1] : "";
         if (command == "--curve-memory" || command == "--curve-memory-demo")
             return run_curve_memory_command(argc, argv);
+        if (command == "--curve-memory-workload")
+            return run_curve_memory_workload_command(argc, argv);
         if (command == "--curve-memory-process")
             return run_curve_memory_process_command(argc, argv);
         if (command == "--help" || command == "-h" || command == "help") {

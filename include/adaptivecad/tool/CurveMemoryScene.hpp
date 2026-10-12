@@ -1,10 +1,12 @@
 #pragma once
 
 #include "adaptivecad/tool/CurveMemoryBank.hpp"
+#include "adaptivecad/tool/ParametricCurve.hpp"
 #include "adaptivecad/tool/SceneDocument.hpp"
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -29,13 +31,17 @@ struct CurveMemorySceneStats {
     std::size_t instances = 0;
     std::size_t relations = 0;
     std::size_t overrides = 0;
+    std::size_t parametric_shapes = 0;
+    // Retained definition vector capacity; independent of sampling density.
+    std::size_t parametric_definition_bytes = 0;
     std::size_t logical_point_bytes = 0;
     // Capacity-based resident storage estimate, not measured process RAM.
     std::size_t resident_bytes = 0;
     // Same scene metadata/topology/instances/edits, using dense shared points.
     // Dense point reads need no decompression cache.
     std::size_t ordinary_shared_bytes = 0;
-    // Same CurveMemoryScene/CurveMemoryBank containers with forced raw storage.
+    // Same sampled bank with forced raw storage. Parametric shapes are replaced
+    // by dense point vectors for this hypothetical fully sampled baseline.
     std::size_t raw_policy_bytes = 0;
     // Current storage plus the entire reachable decoded-cache allowance.
     std::size_t budgeted_resident_bytes = 0;
@@ -50,6 +56,18 @@ public:
     // This gate runs at ingestion; subsequent instances/edits do not reencode.
     static CurveMemoryScene from_document(const SceneDocument& document, std::size_t cacheBlocks = 4,
         CurveStoragePolicy policy = CurveStoragePolicy::Automatic);
+    static CurveMemoryScene from_document(const SceneDocument& document, CurveCacheOptions cacheOptions,
+        CurveStoragePolicy policy = CurveStoragePolicy::Automatic);
+
+    // Generated point-only bodies with authoritative retained definitions. No
+    // sampled arrays or decoded-cache entries are allocated by this factory.
+    static CurveMemoryScene from_parametric(std::span<const ParametricCurveDefinition> definitions,
+        CurveCacheOptions cacheOptions = {});
+    // Null for an imported sampled shape. The pointer is invalidated by mutation.
+    const ParametricCurveDefinition* parametric_definition(std::size_t instance) const;
+    // Copy-on-write revision: preserves other shared instances and placement,
+    // clears this instance's sparse point edits. Imported shapes are rejected.
+    void revise_parametric(std::size_t instance, const ParametricCurveDefinition& definition);
 
     // Expands all instances for existing native BRep, export, session, and UI APIs.
     SceneDocument materialize() const;
@@ -73,14 +91,22 @@ public:
     const std::vector<std::pair<std::size_t, std::size_t>>& relations() const noexcept;
 
     CurveMemorySceneStats stats() const;
+    // Sampled storage only: bank().write() does not serialize scene instances,
+    // relations, edits or retained parametric definitions. materialize() exports
+    // evaluated points through existing scene APIs (losing analytic retention).
     const CurveMemoryBank& bank() const noexcept;
     void clear_cache() const;
+    void configure_cache(CurveCacheOptions options);
 
 private:
     explicit CurveMemoryScene(std::size_t cacheBlocks, CurveStoragePolicy policy);
+    explicit CurveMemoryScene(CurveCacheOptions cacheOptions, CurveStoragePolicy policy);
+    static CurveMemoryScene ingest_document(const SceneDocument& document, CurveMemoryScene scene,
+        CurveStoragePolicy policy);
 
     struct Shape {
         std::size_t curve = 0;
+        std::size_t parametric = std::numeric_limits<std::size_t>::max();
         std::vector<SceneFace> faces;
         double volume_hint = 0.0;
     };
@@ -96,9 +122,12 @@ private:
     };
 
     geometry::Point3D local_point(const Instance& instance, std::size_t vertex) const;
+    std::size_t shape_point_count(const Shape& shape) const;
+    geometry::Point3D shape_point(const Shape& shape, std::size_t vertex) const;
     SceneDocument header_;
     CurveMemoryBank bank_;
     std::vector<Shape> shapes_;
+    std::vector<ParametricCurveDefinition> definitions_;
     std::vector<Instance> instances_;
     std::vector<std::pair<std::size_t, std::size_t>> relations_;
 };

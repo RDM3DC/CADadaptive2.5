@@ -144,11 +144,50 @@ std::uint64_t read_number(std::istream& input, unsigned bytes) {
 } // namespace
 
 CurveMemoryBank::CurveMemoryBank(std::size_t cacheBlocks, CurveStoragePolicy policy)
-    : cache_blocks_(cacheBlocks), storage_policy_(policy) {
+    : storage_policy_(policy) {
     if (cacheBlocks > maximum_cache_blocks) {
         throw std::length_error("CurveMemoryBank cache exceeds block limit");
     }
+    cache_options_ = {CurveCachePolicy::Lru, cacheBlocks *
+        (sizeof(CacheEntry) + block_point_capacity * sizeof(geometry::Point3D))};
 }
+
+CurveMemoryBank::CurveMemoryBank(CurveCacheOptions options, CurveStoragePolicy policy)
+    : storage_policy_(policy) {
+    set_cache_options(options);
+}
+
+CurveMemoryBank::CacheLayout CurveMemoryBank::cache_layout(std::size_t reachableBlocks) const noexcept {
+    constexpr auto entryBytes = sizeof(CacheEntry) + block_point_capacity * sizeof(geometry::Point3D);
+    auto entries = std::min({maximum_cache_blocks, reachableBlocks, cache_options_.budget_bytes / entryBytes});
+    while (entries != 0) {
+        std::size_t width = 0;
+        if (cache_options_.policy == CurveCachePolicy::Arp) {
+            // Four rows, at least two cells per resident entry per row. Powers
+            // of two permit cheap bounded indexing. Layout depends only on the
+            // byte budget and reachable blocks, never on access history.
+            width = 16;
+            while (width < entries * 2) width *= 2;
+        }
+        const auto bytes = entries * entryBytes + 4 * width * sizeof(FrequencyCell);
+        if (bytes <= cache_options_.budget_bytes) return {entries, width, bytes};
+        --entries;
+    }
+    return {};
+}
+
+void CurveMemoryBank::set_cache_options(CurveCacheOptions options) {
+    if (options.policy != CurveCachePolicy::Lru && options.policy != CurveCachePolicy::Arp) {
+        throw std::invalid_argument("Unknown CurveMemoryBank cache policy");
+    }
+    cache_options_ = options;
+    update_cache_budget();
+}
+
+CurveCacheOptions CurveMemoryBank::cache_options() const noexcept { return cache_options_; }
+CurveCacheMetrics CurveMemoryBank::cache_metrics() const noexcept { return cache_metrics_; }
+void CurveMemoryBank::reset_cache_metrics() const noexcept { cache_metrics_ = {}; }
+std::size_t CurveMemoryBank::raw_curve_metadata_bytes() noexcept { return sizeof(Curve); }
 
 void CurveMemoryBank::select_storage(Curve& curve, std::span<const geometry::Point3D> points) {
     curve.point_count = points.size();
@@ -175,8 +214,7 @@ void CurveMemoryBank::select_storage(Curve& curve, std::span<const geometry::Poi
     // Charge the full reachable configured cache for this curve. Charging each
     // curve separately is deliberately conservative when several curves share
     // the bank-wide LRU. No cache is reduced merely to make compression qualify.
-    const auto cacheCost = std::min(cache_blocks_, compressedBlocks) *
-        (sizeof(CacheEntry) + block_point_capacity * sizeof(geometry::Point3D));
+    const auto cacheCost = cache_layout(compressedBlocks).bytes;
     const auto compressedCost = sizeof(Curve) + payloadBytes +
         curve.blocks.capacity() * sizeof(Block) + cacheCost;
     const auto rawCost = sizeof(Curve) + points.size() * sizeof(geometry::Point3D);
@@ -204,7 +242,7 @@ CurveId CurveMemoryBank::add_points(std::span<const geometry::Point3D> points) {
 }
 
 void CurveMemoryBank::update_cache_budget() {
-    effective_cache_blocks_ = std::min(cache_blocks_, compressed_blocks_);
+    cache_layout_ = cache_layout(compressed_blocks_);
     // Insertion can change the number of reachable compressed cache entries.
     clear_cache();
 }
@@ -263,22 +301,86 @@ std::vector<geometry::Point3D> CurveMemoryBank::decode_block(const Block& block)
     return result;
 }
 
-const std::vector<geometry::Point3D>& CurveMemoryBank::cached_block(CurveId curve, std::size_t block) const {
+void CurveMemoryBank::allocate_cache() const {
+    if (cache_.capacity() >= cache_layout_.entries) return;
+    cache_.reserve(cache_layout_.entries);
+    if (cache_layout_.history_width != 0) frequency_.resize(4 * cache_layout_.history_width);
+    // Account actual vector capacities, not only sizes. Standard library vector
+    // growth strategies may overallocate; fail rather than retain an over-budget
+    // cache if an implementation does so for these explicit initial reserves.
+    const auto bytes = cache_.capacity() * sizeof(CacheEntry) +
+        cache_layout_.entries * block_point_capacity * sizeof(geometry::Point3D) +
+        frequency_.capacity() * sizeof(FrequencyCell);
+    if (bytes > cache_layout_.bytes) {
+        clear_cache();
+        throw std::length_error("CurveMemoryBank cache allocation exceeds byte budget");
+    }
+}
+
+std::uint32_t CurveMemoryBank::frequency(CurveId curve, std::size_t block, bool reinforce) const {
+    // ARP-inspired bounded reinforcement and decay, not numerical quantization.
+    // Four independent lazy-decayed count-min rows retain approximate demand
+    // for both admitted and rejected blocks. Only four cells are visited here.
+    const auto mix = [](std::uint64_t value) {
+        value ^= value >> 30;
+        value *= 0xBF58476D1CE4E5B9ULL;
+        value ^= value >> 27;
+        value *= 0x94D049BB133111EBULL;
+        return value ^ (value >> 31);
+    };
+    if (reinforce) ++cache_requests_;
+    const auto epoch = cache_requests_ / std::max<std::size_t>(64, cache_layout_.entries * 8);
+    const auto key = mix(static_cast<std::uint64_t>(curve) + 0x9E3779B97F4A7C15ULL) ^
+                     mix(static_cast<std::uint64_t>(block));
+    auto estimate = std::numeric_limits<std::uint32_t>::max();
+    for (std::size_t row = 0; row < 4; ++row) {
+        const auto column = mix(key + (row + 1) * 0x9E3779B97F4A7C15ULL) &
+                            (cache_layout_.history_width - 1);
+        auto& cell = frequency_[row * cache_layout_.history_width + column];
+        const auto elapsed = epoch - cell.epoch;
+        if (elapsed != 0) {
+            cell.count = elapsed >= 32 ? 0 : cell.count >> static_cast<unsigned>(elapsed);
+            cell.epoch = epoch;
+        }
+        if (reinforce && cell.count < 65535) ++cell.count;
+        estimate = std::min(estimate, cell.count);
+    }
+    return estimate;
+}
+
+const std::vector<geometry::Point3D>& CurveMemoryBank::cached_block(
+    CurveId curve, std::size_t block, std::vector<geometry::Point3D>& scratch) const {
+    std::uint32_t requestedFrequency = 0;
+    if (cache_layout_.entries != 0 && cache_options_.policy == CurveCachePolicy::Arp) {
+        allocate_cache();
+        requestedFrequency = frequency(curve, block, true);
+    }
     const auto found = std::find_if(cache_.begin(), cache_.end(), [curve, block](const CacheEntry& entry) {
         return entry.curve == curve && entry.block == block;
     });
     if (found != cache_.end()) {
+        ++cache_metrics_.hits;
         std::rotate(found, found + 1, cache_.end());
         return cache_.back().points;
     }
-    auto decoded = decode_block(curves_[curve].blocks[block]);
-    if (cache_.capacity() < effective_cache_blocks_) {
-        cache_.reserve(effective_cache_blocks_);
-    }
-    if (cache_.size() == effective_cache_blocks_) {
+    ++cache_metrics_.misses;
+    scratch = decode_block(curves_[curve].blocks[block]);
+    ++cache_metrics_.decoded_blocks;
+    cache_metrics_.decoded_points += scratch.size();
+    cache_metrics_.transient_decode_peak_bytes = std::max(cache_metrics_.transient_decode_peak_bytes,
+        scratch.capacity() * sizeof(geometry::Point3D));
+    if (cache_layout_.entries == 0) return scratch;
+    allocate_cache();
+    if (cache_.size() == cache_layout_.entries) {
+        if (cache_options_.policy == CurveCachePolicy::Arp &&
+            requestedFrequency <= frequency(cache_.front().curve, cache_.front().block, false)) {
+            ++cache_metrics_.admission_rejections;
+            return scratch;
+        }
+        ++cache_metrics_.evictions;
         cache_.erase(cache_.begin());
     }
-    cache_.push_back(CacheEntry{curve, block, std::move(decoded)});
+    cache_.push_back(CacheEntry{curve, block, std::move(scratch)});
     return cache_.back().points;
 }
 
@@ -296,10 +398,8 @@ geometry::Point3D CurveMemoryBank::point(CurveId curveId, std::size_t index) con
     if (!block.compressed) {
         return raw_point(block.payload, localIndex);
     }
-    if (effective_cache_blocks_ == 0) {
-        return decode_block(block)[localIndex];
-    }
-    return cached_block(curveId, blockIndex)[localIndex];
+    std::vector<geometry::Point3D> scratch;
+    return cached_block(curveId, blockIndex, scratch)[localIndex];
 }
 
 void CurveMemoryBank::read_points(CurveId curveId, std::span<const std::size_t> indices,
@@ -336,8 +436,7 @@ void CurveMemoryBank::read_points(CurveId curveId, std::span<const std::size_t> 
             // The local decode dies at this group's end; cache=0 still decodes
             // just once for arbitrarily ordered/repeated indices in the group.
             std::vector<geometry::Point3D> scratch;
-            const auto& decoded = effective_cache_blocks_ == 0
-                ? (scratch = decode_block(block)) : cached_block(curveId, blockIndex);
+            const auto& decoded = cached_block(curveId, blockIndex, scratch);
             for (auto i = begin; i < end; ++i) {
                 const auto ordinal = order[i];
                 output[ordinal] = decoded[indices[ordinal] % block_point_capacity];
@@ -358,11 +457,9 @@ std::vector<geometry::Point3D> CurveMemoryBank::points(CurveId curveId) const {
             for (std::size_t j = 0; j < block.point_count; ++j) {
                 result.push_back(raw_point(block.payload, j));
             }
-        } else if (effective_cache_blocks_ == 0) {
-            const auto decoded = decode_block(block);
-            result.insert(result.end(), decoded.begin(), decoded.end());
         } else {
-            const auto& decoded = cached_block(curveId, i);
+            std::vector<geometry::Point3D> scratch;
+            const auto& decoded = cached_block(curveId, i, scratch);
             result.insert(result.end(), decoded.begin(), decoded.end());
         }
     }
@@ -371,13 +468,18 @@ std::vector<geometry::Point3D> CurveMemoryBank::points(CurveId curveId) const {
 
 void CurveMemoryBank::clear_cache() const {
     std::vector<CacheEntry>().swap(cache_);
+    std::vector<FrequencyCell>().swap(frequency_);
+    cache_requests_ = 0;
 }
 
 CurveMemoryStats CurveMemoryBank::stats() const {
     CurveMemoryStats result;
     result.logical_point_bytes = total_points_ * point_bytes;
-    result.cache_limit_bytes = effective_cache_blocks_ * (sizeof(CacheEntry) + block_point_capacity * sizeof(geometry::Point3D));
-    result.cache_bytes = cache_.capacity() * sizeof(CacheEntry);
+    result.cache_limit_bytes = cache_layout_.bytes;
+    result.cache_controller_bytes = frequency_.capacity() * sizeof(FrequencyCell);
+    result.cache_requested_budget_bytes = cache_options_.budget_bytes;
+    result.cache_entries = cache_.size();
+    result.cache_bytes = cache_.capacity() * sizeof(CacheEntry) + result.cache_controller_bytes;
     for (const auto& entry : cache_) {
         result.cache_bytes += entry.points.capacity() * sizeof(geometry::Point3D);
     }

@@ -3,6 +3,7 @@
 This repository now contains a C++20 skeleton for the AdaptiveCAD kernel described in `adaptive_cad_flat_adasccsc.md`.
 
 See [native curve-memory storage, batch reads and process RAM benchmarks](docs/CURVE_MEMORY.md).
+See [optional ARP caching and retained parametric curves](docs/CURVE_MEMORY_ARP.md) for the next native experiment.
 
 ## Included
 

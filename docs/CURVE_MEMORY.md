@@ -1,5 +1,9 @@
 # Native curve memory: total-cost selection and process measurements
 
+These measurements describe v2 at code commit `1480df2`. The follow-up
+[native ARP cache and parametric curves](CURVE_MEMORY_ARP.md) adds optional
+adaptive cache admission and retained curve definitions with separate validation.
+
 This is the C++ continuation of the [shared CMA experiment](https://chatgpt.com/share/6acaf7c9-aa78-83e8-99c4-b38956f1da89).
 The actual repository is [RDM3DC/CADadaptive2.5](https://github.com/RDM3DC/CADadaptive2.5).
 The review branch is `codex/curve-memory-v2`. The original Python ZIP was not

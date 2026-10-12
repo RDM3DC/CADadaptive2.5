@@ -46,6 +46,7 @@ add_library(adaptivecad_geometry
 add_library(adaptivecad_tool
     src/tool/CurveMemoryBank.cpp
     src/tool/CurveMemoryScene.cpp
+    src/tool/ParametricCurve.cpp
     src/tool/MetamaterialScaffold.cpp
     src/tool/SceneDocument.cpp
     src/tool/SessionBundleIO.cpp
@@ -103,7 +104,7 @@ adaptivecad_enable_warnings(adaptivecad_geometry)
 adaptivecad_enable_warnings(adaptivecad_tool)
 
 if(ADAPTIVECAD_BUILD_CLI)
-    add_executable(adaptivecad_cli src/app/main.cpp src/app/CurveMemoryCommand.cpp src/app/CurveMemoryProcessCommand.cpp)
+    add_executable(adaptivecad_cli src/app/main.cpp src/app/CurveMemoryCommand.cpp src/app/CurveMemoryProcessCommand.cpp src/app/CurveMemoryWorkloadCommand.cpp)
     if(WIN32)
         target_link_libraries(adaptivecad_cli PRIVATE psapi)
     endif()
@@ -194,6 +195,20 @@ if(ADAPTIVECAD_BUILD_TESTS)
                     --report-json "${CMAKE_CURRENT_BINARY_DIR}/curve_memory_process_${storage_policy}.json")
             set_tests_properties(adaptivecad_cli_curve_memory_process_${storage_policy} PROPERTIES TIMEOUT 120)
         endforeach()
+        foreach(cache_policy IN ITEMS lru arp)
+            foreach(read_access IN ITEMS individual batch)
+                add_test(NAME adaptivecad_cli_curve_memory_workload_${cache_policy}_${read_access}
+                    COMMAND adaptivecad_cli --curve-memory-workload --model sampled-curves
+                        --size 262144 --queries 4096 --trace mixed --access ${read_access}
+                        --cache-policy ${cache_policy} --cache-bytes 65536)
+                set_tests_properties(adaptivecad_cli_curve_memory_workload_${cache_policy}_${read_access}
+                    PROPERTIES TIMEOUT 120)
+            endforeach()
+        endforeach()
+        add_test(NAME adaptivecad_cli_curve_memory_parametric
+            COMMAND adaptivecad_cli --curve-memory-workload --model parametric-curves
+                --size 1048576 --queries 4096 --trace shift --access batch)
+        set_tests_properties(adaptivecad_cli_curve_memory_parametric PROPERTIES TIMEOUT 120)
         add_test(NAME adaptivecad_cli_curve_memory_demo
             COMMAND adaptivecad_cli --curve-memory-demo --instances 8
                 --report-json "${CMAKE_CURRENT_BINARY_DIR}/curve_memory_demo.json")
@@ -275,7 +290,8 @@ install(DIRECTORY samples DESTINATION "${CMAKE_INSTALL_DATADIR}/adaptivecad")
 install(FILES README.md COMMERCIALIZATION.md adaptive_cad_flat_adasccsc.md
     DESTINATION "${CMAKE_INSTALL_DATADIR}/adaptivecad")
 
-install(FILES docs/CURVE_MEMORY.md DESTINATION "${CMAKE_INSTALL_DATADIR}/adaptivecad/docs")
+install(FILES docs/CURVE_MEMORY.md docs/CURVE_MEMORY_ARP.md
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/adaptivecad/docs")
 
 set(CPACK_PACKAGE_NAME "AdaptiveCAD")
 set(CPACK_PACKAGE_VENDOR "AdaptiveCAD")

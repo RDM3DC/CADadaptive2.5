@@ -15,6 +15,8 @@ namespace {
 using adaptivecad::geometry::Point3D;
 using adaptivecad::tool::CurveMemoryBank;
 using adaptivecad::tool::CurveStoragePolicy;
+using adaptivecad::tool::CurveCachePolicy;
+using adaptivecad::tool::CurveCacheOptions;
 
 void check(bool condition, const char* message) {
     if (!condition) {
@@ -315,6 +317,143 @@ void test_batched_random_reads() {
     }
 }
 
+void test_cache_byte_budgets_and_metrics() {
+    std::vector<Point3D> points(32768);
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        points[i] = {static_cast<double>(i / 16), -0.0,
+                     std::bit_cast<double>(0x7FF8000000001234ULL)};
+    }
+    for (const auto policy : {CurveCachePolicy::Lru, CurveCachePolicy::Arp}) {
+        for (const auto budget : {std::size_t{0}, std::size_t{1}, std::size_t{1024},
+                                  std::size_t{6144}, std::size_t{8192}, std::size_t{24576},
+                                  std::size_t{256 * 1024}}) {
+            // Cache configuration can be changed without changing the encoded
+            // fixture, so policy comparisons use identical source storage.
+            CurveMemoryBank bank(0);
+            bank.add_points(points);
+            check(bank.stats().compressed_blocks == 128, "budget fixture failed to compress");
+            const auto archive = save(bank);
+            bank.set_cache_options({policy, budget});
+            check(save(bank) == archive, "changing cache policy changed persistent coordinates");
+            const auto cold = bank.stats();
+            check(cold.cache_requested_budget_bytes == budget && cold.cache_limit_bytes <= budget,
+                  "reachable cache exceeds requested bytes");
+            check(cold.cache_bytes == 0 && cold.cache_controller_bytes == 0,
+                  "cache configuration eagerly allocated history");
+            check(bank.cache_options().policy == policy && bank.cache_options().budget_bytes == budget,
+                  "cache options getter disagrees");
+            check_curve(bank, 0, points);
+            const auto warm = bank.stats();
+            check(warm.cache_bytes <= warm.cache_limit_bytes && warm.cache_limit_bytes <= budget,
+                  "resident cache and history exceeded byte budget");
+            check(warm.resident_bytes == cold.resident_bytes + warm.cache_bytes,
+                  "controller or entry capacities omitted from resident bytes");
+            if (policy == CurveCachePolicy::Lru) {
+                check(warm.cache_controller_bytes == 0, "LRU allocated ARP history");
+            } else if (warm.cache_entries != 0) {
+                check(warm.cache_controller_bytes > 0, "ARP history omitted from accounting");
+            }
+            const auto metrics = bank.cache_metrics();
+            check(metrics.decoded_blocks == metrics.misses && metrics.decoded_points == metrics.misses * 256,
+                  "decode metrics disagree with compressed block misses");
+            check(metrics.hits + metrics.misses == points.size() + 128,
+                  "request metrics omitted bulk or individual reads");
+            check(metrics.transient_decode_peak_bytes == 256 * sizeof(Point3D),
+                  "temporary decoded block memory was not reported");
+            bank.clear_cache();
+            check(bank.stats().cache_bytes == 0 && bank.stats().cache_controller_bytes == 0 &&
+                  bank.stats().cache_entries == 0, "clear_cache retained policy history or entries");
+            check(bank.cache_metrics().misses == metrics.misses, "clear_cache unexpectedly reset metrics");
+            bank.reset_cache_metrics();
+            check(bank.cache_metrics().hits == 0 && bank.cache_metrics().misses == 0 &&
+                  bank.cache_metrics().decoded_blocks == 0 && bank.cache_metrics().decoded_points == 0 &&
+                  bank.cache_metrics().evictions == 0 && bank.cache_metrics().admission_rejections == 0 &&
+                  bank.cache_metrics().transient_decode_peak_bytes == 0, "metrics reset was incomplete");
+
+            const std::array<std::size_t, 6> indices{511, 0, 256, 5, 511, 0};
+            std::array<Point3D, 6> output;
+            bank.read_points(0, indices, output);
+            for (std::size_t i = 0; i < indices.size(); ++i) {
+                check(same_bits(output[i], points[indices[i]]), "policy batch changed NaN or signed zero");
+            }
+            check(bank.cache_metrics().misses == 2 && bank.cache_metrics().decoded_blocks == 2,
+                  "batch did not count exactly one request per touched compressed block");
+            (void)bank.point(0, 256);
+            const auto hitsBeforeRepeat = bank.cache_metrics().hits;
+            (void)bank.point(0, 256);
+            check(bank.cache_metrics().hits == hitsBeforeRepeat + (bank.stats().cache_entries == 0 ? 0U : 1U),
+                  "repeated block read did not hit the cache");
+            const auto entries = bank.stats().cache_entries;
+            bank.reset_cache_metrics();
+            check(bank.stats().cache_entries == entries, "metrics reset evicted live cache entries");
+            check(save(bank) == archive, "cache reads changed archive bytes");
+        }
+    }
+
+    CurveMemoryBank raw(CurveCacheOptions{CurveCachePolicy::Arp, 256 * 1024}, CurveStoragePolicy::Raw);
+    raw.add_points(points);
+    check_curve(raw, 0, points);
+    check(raw.stats().cache_bytes == 0 && raw.stats().cache_limit_bytes == 0 &&
+          raw.cache_metrics().hits == 0 && raw.cache_metrics().misses == 0 &&
+          raw.cache_metrics().decoded_blocks == 0, "raw coordinates used the decoded-block controller");
+    expect_throw<std::invalid_argument>([&] {
+        raw.set_cache_options({static_cast<CurveCachePolicy>(999), 1024});
+    }, "invalid cache policy accepted");
+    check(raw.cache_options().policy == CurveCachePolicy::Arp, "invalid policy changed existing configuration");
+
+    for (const auto policy : {CurveCachePolicy::Lru, CurveCachePolicy::Arp}) {
+        CurveMemoryBank direct(CurveCacheOptions{policy, 256 * 1024});
+        direct.add_points(points);
+        const auto stats = direct.stats();
+        check(stats.compressed_curves == 1 && stats.budgeted_resident_bytes * 100 <=
+              stats.dense_equivalent_bytes * 95, "selection omitted requested cache or controller cost");
+        CurveMemoryBank tiny(CurveCacheOptions{policy, 256 * 1024});
+        tiny.add_points(std::span<const Point3D>(points.data(), 256));
+        check(tiny.stats().raw_curves == 1, "small curve ignored full reachable cache cost");
+    }
+}
+
+void test_arp_scan_resistance_and_shift() {
+    const std::vector<Point3D> points(32768, Point3D{12.5, -0.0, 8192});
+    const auto exercise = [&points](CurveCachePolicy policy) {
+        CurveMemoryBank bank(CurveCacheOptions{policy, 24 * 1024});
+        bank.add_points(points);
+        const auto read = [&bank, &points](std::size_t block) {
+            check(same_bits(bank.point(0, block * 256), points[block * 256]), "ARP trace changed geometry");
+        };
+        for (unsigned i = 0; i < 20; ++i) { read(0); read(1); }
+        bank.reset_cache_metrics();
+        for (unsigned pass = 0; pass < 80; ++pass) {
+            read(0); read(1);
+            // Fresh one-use blocks simulate scans interleaved with editing two
+            // hot regions. Both policies receive the same 24 KiB total budget.
+            for (std::size_t i = 0; i < 8; ++i) read(2 + (pass * 8 + i) % 126);
+        }
+        const auto mixed = bank.cache_metrics();
+        check(bank.stats().cache_bytes <= 24 * 1024, "trace exceeded total cache budget");
+        if (policy == CurveCachePolicy::Arp) {
+            check(mixed.admission_rejections > 0, "scan did not exercise ARP admission rejection");
+            // Repeated demand in a different region must displace old hot data.
+            // Scores decay lazily, so earlier high frequency cannot pin it forever.
+            for (unsigned i = 0; i < 256; ++i) { read(96); read(97); }
+            bank.reset_cache_metrics();
+            for (unsigned i = 0; i < 64; ++i) { read(96); read(97); }
+            check(bank.cache_metrics().misses == 0 && bank.cache_metrics().hits == 128,
+                  "ARP failed to adapt to a shifted hot region");
+            bank.clear_cache();
+            bank.reset_cache_metrics();
+            read(96);
+            check(bank.cache_metrics().misses == 1 && bank.cache_metrics().hits == 0,
+                  "cleared ARP cache reused old entries");
+        }
+        return mixed;
+    };
+    const auto lru = exercise(CurveCachePolicy::Lru);
+    const auto arp = exercise(CurveCachePolicy::Arp);
+    check(arp.decoded_blocks < lru.decoded_blocks, "ARP failed to reduce decodes on deterministic hot/scan trace");
+    check(arp.evictions < lru.evictions, "ARP failed to protect reused blocks against scans");
+}
+
 void test_corruption_and_limits() {
     CurveMemoryBank bank(0);
     bank.add_points(std::vector<Point3D>(10, Point3D{2, 4, 8}));
@@ -371,6 +510,8 @@ int main() {
         test_bank_wide_cache_and_memory();
         test_total_cost_storage_selection();
         test_batched_random_reads();
+        test_cache_byte_budgets_and_metrics();
+        test_arp_scan_resistance_and_shift();
         test_corruption_and_limits();
         std::cout << "CurveMemoryBank: exact recovery, cache, fallback, and persistence checks passed\n";
     } catch (const std::exception& error) {

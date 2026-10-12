@@ -78,6 +78,27 @@ std::uint64_t shape_hash(const SceneBody& body) {
     return hash;
 }
 
+bool same_definition(const ParametricCurveDefinition& a, const ParametricCurveDefinition& b) {
+    if (a.kind != b.kind || a.sample_count != b.sample_count || !same_double(a.radius, b.radius)) return false;
+    for (std::size_t i = 0; i < a.control_points.size(); ++i) {
+        if (!same_point(a.control_points[i], b.control_points[i])) return false;
+    }
+    return true;
+}
+
+std::uint64_t definition_hash(const ParametricCurveDefinition& definition) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    hash_word(hash, static_cast<std::uint64_t>(definition.kind));
+    hash_word(hash, definition.sample_count);
+    hash_word(hash, std::bit_cast<std::uint64_t>(definition.radius));
+    for (const auto& point : definition.control_points) {
+        hash_word(hash, std::bit_cast<std::uint64_t>(point.x));
+        hash_word(hash, std::bit_cast<std::uint64_t>(point.y));
+        hash_word(hash, std::bit_cast<std::uint64_t>(point.z));
+    }
+    return hash;
+}
+
 void validate_placement(const CurveMemoryAffine& matrix) {
     for (const auto value : matrix.values) {
         if (!std::isfinite(value)) throw std::invalid_argument("curve-memory placement must be finite");
@@ -135,10 +156,20 @@ CurveMemoryAffine CurveMemoryAffine::translation(double x, double y, double z) {
 }
 
 CurveMemoryScene::CurveMemoryScene(std::size_t cacheBlocks, CurveStoragePolicy policy) : bank_(cacheBlocks, policy) {}
+CurveMemoryScene::CurveMemoryScene(CurveCacheOptions cacheOptions, CurveStoragePolicy policy) : bank_(cacheOptions, policy) {}
 
 CurveMemoryScene CurveMemoryScene::from_document(const SceneDocument& document, std::size_t cacheBlocks,
     CurveStoragePolicy policy) {
-    CurveMemoryScene scene(cacheBlocks, policy);
+    return ingest_document(document, CurveMemoryScene(cacheBlocks, policy), policy);
+}
+
+CurveMemoryScene CurveMemoryScene::from_document(const SceneDocument& document, CurveCacheOptions cacheOptions,
+    CurveStoragePolicy policy) {
+    return ingest_document(document, CurveMemoryScene(cacheOptions, policy), policy);
+}
+
+CurveMemoryScene CurveMemoryScene::ingest_document(const SceneDocument& document, CurveMemoryScene scene,
+    CurveStoragePolicy policy) {
     // Copy the header fields explicitly to avoid temporarily copying dense geometry.
     scene.header_.scene_label = document.scene_label;
     scene.header_.source_kind = document.source_kind;
@@ -197,7 +228,7 @@ CurveMemoryScene CurveMemoryScene::from_document(const SceneDocument& document, 
         // scene metadata are included. In that case retain direct raw reads.
         if (cost.budgeted_resident_bytes > cost.raw_policy_bytes ||
             cost.raw_policy_bytes - cost.budgeted_resident_bytes < minimumSaving) {
-            CurveMemoryBank raw(cacheBlocks, CurveStoragePolicy::Raw);
+            CurveMemoryBank raw(scene.bank_.cache_options(), CurveStoragePolicy::Raw);
             for (std::size_t i = 0; i < scene.shapes_.size(); ++i) {
                 scene.shapes_[i].curve = raw.add_points(representatives[i]->vertices);
             }
@@ -208,6 +239,89 @@ CurveMemoryScene CurveMemoryScene::from_document(const SceneDocument& document, 
     return scene;
 }
 
+CurveMemoryScene CurveMemoryScene::from_parametric(std::span<const ParametricCurveDefinition> definitions,
+    CurveCacheOptions cacheOptions) {
+    if (definitions.size() > CurveMemoryBank::maximum_curves) {
+        throw std::length_error("too many parametric definitions");
+    }
+    for (const auto& definition : definitions) definition.validate();
+    CurveMemoryScene scene(cacheOptions, CurveStoragePolicy::Automatic);
+    scene.header_.scene_label = "Retained parametric curves";
+    scene.instances_.reserve(definitions.size());
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> candidates;
+    std::size_t totalPoints = 0;
+    for (const auto& definition : definitions) {
+        auto& bucket = candidates[definition_hash(definition)];
+        std::size_t shapeIndex = scene.shapes_.size();
+        for (const auto candidate : bucket) {
+            if (same_definition(scene.definitions_[scene.shapes_[candidate].parametric], definition)) {
+                shapeIndex = candidate;
+                break;
+            }
+        }
+        if (shapeIndex == scene.shapes_.size()) {
+            if (definition.sample_count > CurveMemoryBank::maximum_points - totalPoints) {
+                throw std::length_error("parametric scene sample limit exceeded");
+            }
+            totalPoints += definition.sample_count;
+            Shape shape;
+            shape.parametric = scene.definitions_.size();
+            scene.definitions_.push_back(definition);
+            scene.shapes_.push_back(std::move(shape));
+            bucket.push_back(shapeIndex);
+        }
+        Instance instance;
+        instance.shape = shapeIndex;
+        instance.name = "Parametric curve " + std::to_string(scene.instances_.size() + 1);
+        scene.instances_.push_back(std::move(instance));
+    }
+    return scene;
+}
+
+const ParametricCurveDefinition* CurveMemoryScene::parametric_definition(std::size_t instance) const {
+    const auto& shape = shapes_.at(instances_.at(instance).shape);
+    if (shape.parametric == std::numeric_limits<std::size_t>::max()) return nullptr;
+    return &definitions_.at(shape.parametric);
+}
+
+void CurveMemoryScene::revise_parametric(std::size_t instance, const ParametricCurveDefinition& definition) {
+    definition.validate();
+    auto& selected = instances_.at(instance);
+    const auto definitionIndex = shapes_.at(selected.shape).parametric;
+    if (definitionIndex == std::numeric_limits<std::size_t>::max()) {
+        throw std::invalid_argument("imported samples cannot be replaced by a parametric definition");
+    }
+    // The caller may pass a reference returned by parametric_definition(); copy
+    // before any vector growth invalidates that reference.
+    const auto replacement = definition;
+    if (same_definition(definitions_[definitionIndex], replacement)) {
+        selected.overrides.clear();
+        return;
+    }
+    const auto shared = std::count_if(instances_.begin(), instances_.end(),
+        [&](const Instance& other) { return other.shape == selected.shape; }) > 1;
+    std::size_t totalPoints = bank_.stats().logical_point_bytes / sizeof(geometry::Point3D);
+    for (const auto& stored : definitions_) totalPoints += stored.sample_count;
+    if (!shared) totalPoints -= definitions_[definitionIndex].sample_count;
+    if (replacement.sample_count > CurveMemoryBank::maximum_points - totalPoints) {
+        throw std::length_error("parametric scene sample limit exceeded");
+    }
+    if (shared) {
+        if (shapes_.size() >= CurveMemoryBank::maximum_curves) throw std::length_error("too many parametric shapes");
+        // Reserve both first so a failed allocation cannot detach the instance.
+        definitions_.reserve(definitions_.size() + 1);
+        shapes_.reserve(shapes_.size() + 1);
+        Shape shape;
+        shape.parametric = definitions_.size();
+        definitions_.push_back(replacement);
+        shapes_.push_back(std::move(shape));
+        selected.shape = shapes_.size() - 1;
+    } else {
+        definitions_[definitionIndex] = replacement;
+    }
+    selected.overrides.clear();
+}
+
 std::size_t CurveMemoryScene::instance_count() const noexcept { return instances_.size(); }
 
 std::size_t CurveMemoryScene::shape_id(std::size_t instance) const {
@@ -215,16 +329,26 @@ std::size_t CurveMemoryScene::shape_id(std::size_t instance) const {
 }
 
 std::size_t CurveMemoryScene::point_count(std::size_t instance) const {
-    return bank_.point_count(shapes_.at(instances_.at(instance).shape).curve);
+    return shape_point_count(shapes_.at(instances_.at(instance).shape));
+}
+
+std::size_t CurveMemoryScene::shape_point_count(const Shape& shape) const {
+    return shape.parametric == std::numeric_limits<std::size_t>::max() ? bank_.point_count(shape.curve) :
+        definitions_.at(shape.parametric).sample_count;
+}
+
+geometry::Point3D CurveMemoryScene::shape_point(const Shape& shape, std::size_t vertex) const {
+    return shape.parametric == std::numeric_limits<std::size_t>::max() ? bank_.point(shape.curve, vertex) :
+        definitions_.at(shape.parametric).evaluate_validated(vertex);
 }
 
 geometry::Point3D CurveMemoryScene::local_point(const Instance& instance, std::size_t vertex) const {
-    const auto curve = shapes_.at(instance.shape).curve;
-    if (vertex >= bank_.point_count(curve)) throw std::out_of_range("curve-memory vertex index outside instance");
+    const auto& shape = shapes_.at(instance.shape);
+    if (vertex >= shape_point_count(shape)) throw std::out_of_range("curve-memory vertex index outside instance");
     const auto found = std::lower_bound(instance.overrides.begin(), instance.overrides.end(), vertex,
         [](const auto& entry, std::size_t index) { return entry.first < index; });
     if (found != instance.overrides.end() && found->first == vertex) return found->second;
-    return bank_.point(curve, vertex);
+    return shape_point(shape, vertex);
 }
 
 geometry::Point3D CurveMemoryScene::point(std::size_t instance, std::size_t vertex) const {
@@ -235,10 +359,14 @@ geometry::Point3D CurveMemoryScene::point(std::size_t instance, std::size_t vert
 void CurveMemoryScene::points(std::size_t instance, std::span<const std::size_t> vertices,
     std::span<geometry::Point3D> output) const {
     const auto& selected = instances_.at(instance);
-    const auto curve = shapes_.at(selected.shape).curve;
+    const auto& shape = shapes_.at(selected.shape);
     // The bank validates the entire request before writing output, and groups
     // block reads even when callers submit unordered or repeated indices.
-    bank_.read_points(curve, vertices, output);
+    if (shape.parametric == std::numeric_limits<std::size_t>::max()) {
+        bank_.read_points(shape.curve, vertices, output);
+    } else {
+        definitions_.at(shape.parametric).evaluate(vertices, output);
+    }
     if (!selected.overrides.empty()) {
         for (std::size_t i = 0; i < vertices.size(); ++i) {
             const auto found = std::lower_bound(selected.overrides.begin(), selected.overrides.end(), vertices[i],
@@ -253,7 +381,15 @@ void CurveMemoryScene::points(std::size_t instance, std::span<const std::size_t>
 
 std::vector<geometry::Point3D> CurveMemoryScene::points(std::size_t instance) const {
     const auto& selected = instances_.at(instance);
-    auto result = bank_.points(shapes_.at(selected.shape).curve);
+    const auto& shape = shapes_.at(selected.shape);
+    std::vector<geometry::Point3D> result;
+    if (shape.parametric == std::numeric_limits<std::size_t>::max()) {
+        result = bank_.points(shape.curve);
+    } else {
+        const auto& definition = definitions_.at(shape.parametric);
+        result.resize(definition.sample_count);
+        for (std::size_t i = 0; i < result.size(); ++i) result[i] = definition.evaluate_validated(i);
+    }
     for (const auto& edit : selected.overrides) result.at(edit.first) = edit.second;
     if (!is_identity(selected.placement)) {
         for (auto& vertex : result) vertex = transform(selected.placement, vertex);
@@ -272,14 +408,14 @@ std::size_t CurveMemoryScene::add_instance(std::size_t existing, const CurveMemo
 
 void CurveMemoryScene::set_point(std::size_t instance, std::size_t vertex, geometry::Point3D localPoint) {
     auto& selected = instances_.at(instance);
-    const auto curve = shapes_.at(selected.shape).curve;
-    if (vertex >= bank_.point_count(curve)) throw std::out_of_range("curve-memory vertex index outside instance");
+    const auto& shape = shapes_.at(selected.shape);
+    if (vertex >= shape_point_count(shape)) throw std::out_of_range("curve-memory vertex index outside instance");
     if (!std::isfinite(localPoint.x) || !std::isfinite(localPoint.y) || !std::isfinite(localPoint.z)) {
         throw std::invalid_argument("curve-memory point edit must be finite");
     }
     auto found = std::lower_bound(selected.overrides.begin(), selected.overrides.end(), vertex,
         [](const auto& entry, std::size_t index) { return entry.first < index; });
-    if (same_point(localPoint, bank_.point(curve, vertex))) {
+    if (same_point(localPoint, shape_point(shape, vertex))) {
         if (found != selected.overrides.end() && found->first == vertex) selected.overrides.erase(found);
     } else if (found != selected.overrides.end() && found->first == vertex) {
         found->second = localPoint;
@@ -298,6 +434,7 @@ void CurveMemoryScene::add_relation(std::size_t from, std::size_t to) {
 const std::vector<std::pair<std::size_t, std::size_t>>& CurveMemoryScene::relations() const noexcept { return relations_; }
 const CurveMemoryBank& CurveMemoryScene::bank() const noexcept { return bank_; }
 void CurveMemoryScene::clear_cache() const { bank_.clear_cache(); }
+void CurveMemoryScene::configure_cache(CurveCacheOptions options) { bank_.set_cache_options(options); }
 
 SceneDocument CurveMemoryScene::materialize() const {
     SceneDocument document = header_;
@@ -331,6 +468,8 @@ CurveMemorySceneStats CurveMemoryScene::stats() const {
     result.unique_shapes = shapes_.size();
     result.instances = instances_.size();
     result.relations = relations_.size();
+    result.parametric_shapes = definitions_.size();
+    result.parametric_definition_bytes = definitions_.capacity() * sizeof(ParametricCurveDefinition);
     const auto bankStats = bank_.stats();
     result.cache_bytes = bankStats.cache_bytes;
     result.cache_limit_bytes = bankStats.cache_limit_bytes;
@@ -338,9 +477,12 @@ CurveMemorySceneStats CurveMemoryScene::stats() const {
         shapes_.capacity() * sizeof(Shape) + instances_.capacity() * sizeof(Instance) +
         relations_.capacity() * sizeof(decltype(relations_)::value_type);
     std::size_t denseBytes = 0;
+    std::size_t parametricDenseBytes = 0;
     for (const auto& shape : shapes_) {
         common += shape.faces.capacity() * sizeof(SceneFace);
-        denseBytes += bank_.point_count(shape.curve) * sizeof(geometry::Point3D);
+        const auto pointBytes = shape_point_count(shape) * sizeof(geometry::Point3D);
+        denseBytes += pointBytes;
+        if (shape.parametric != std::numeric_limits<std::size_t>::max()) parametricDenseBytes += pointBytes;
         for (const auto& face : shape.faces) {
             common += face.vertex_indices.capacity() * sizeof(std::size_t) + string_bytes(face.material_name);
         }
@@ -349,11 +491,12 @@ CurveMemorySceneStats CurveMemoryScene::stats() const {
         common += string_bytes(instance.name) + string_bytes(instance.material_name) +
             instance.overrides.capacity() * sizeof(decltype(instance.overrides)::value_type);
         result.overrides += instance.overrides.size();
-        result.logical_point_bytes += bank_.point_count(shapes_[instance.shape].curve) * sizeof(geometry::Point3D);
+        result.logical_point_bytes += shape_point_count(shapes_[instance.shape]) * sizeof(geometry::Point3D);
     }
-    result.resident_bytes = common + bankStats.resident_bytes;
-    result.raw_policy_bytes = common + bankStats.dense_equivalent_bytes;
-    result.budgeted_resident_bytes = common + bankStats.budgeted_resident_bytes;
+    result.resident_bytes = common + bankStats.resident_bytes + result.parametric_definition_bytes;
+    result.raw_policy_bytes = common + bankStats.dense_equivalent_bytes + parametricDenseBytes +
+        definitions_.size() * CurveMemoryBank::raw_curve_metadata_bytes();
+    result.budgeted_resident_bytes = common + bankStats.budgeted_resident_bytes + result.parametric_definition_bytes;
     result.ordinary_shared_bytes = common + sizeof(std::vector<std::vector<geometry::Point3D>>) +
         shapes_.size() * sizeof(std::vector<geometry::Point3D>) + denseBytes;
     return result;

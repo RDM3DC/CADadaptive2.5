@@ -17,6 +17,8 @@ using adaptivecad::geometry::Point3D;
 using adaptivecad::tool::CurveMemoryAffine;
 using adaptivecad::tool::CurveMemoryScene;
 using adaptivecad::tool::CurveStoragePolicy;
+using adaptivecad::tool::ParametricCurveDefinition;
+using adaptivecad::tool::ParametricCurveKind;
 using adaptivecad::tool::SceneBody;
 using adaptivecad::tool::SceneColor;
 using adaptivecad::tool::SceneDocument;
@@ -378,6 +380,199 @@ void native_geometry_and_export() {
     exact_document(empty, emptyScene.materialize());
 }
 
+void parametric_evaluation_and_retention() {
+    const auto line = ParametricCurveDefinition::line({-0.0, 2.0, 4.0}, {8.0, 6.0, -0.0}, 33);
+    exact(line.evaluate(0), line.control_points[0]);
+    exact(line.evaluate(32), line.control_points[1]);
+    exact(line.evaluate(16), Point3D{4.0, 4.0, 2.0});
+    const auto bezier = ParametricCurveDefinition::cubic_bezier(
+        {0.0, 0.0, -0.0}, {0.0, 4.0, 0.0}, {4.0, 4.0, 0.0}, {4.0, 0.0, -0.0}, 65);
+    exact(bezier.evaluate(0), bezier.control_points[0]);
+    exact(bezier.evaluate(64), bezier.control_points[3]);
+    exact(bezier.evaluate(32), Point3D{2.0, 3.0, 0.0});
+    const auto circle = ParametricCurveDefinition::circle(
+        {1.0, 2.0, 3.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, 2.0, 32);
+    exact(circle.evaluate(0), Point3D{3.0, 2.0, 3.0});
+    const auto quarter = circle.evaluate(8);
+    assert(std::abs(quarter.x - 1.0) < 1e-15 && quarter.y == 4.0 && quarter.z == 3.0);
+    const auto last = circle.evaluate(31);
+    assert(last.y != circle.evaluate(0).y); // No repeated endpoint.
+
+    const std::array definitions{line, bezier, circle, line};
+    auto scene = CurveMemoryScene::from_parametric(definitions);
+    assert(scene.instance_count() == definitions.size());
+    assert(scene.stats().unique_shapes == 3);
+    assert(scene.stats().parametric_shapes == 3);
+    assert(scene.shape_id(0) == scene.shape_id(3));
+    assert(scene.bank().curve_count() == 0);
+    assert(scene.stats().cache_bytes == 0 && scene.stats().cache_limit_bytes == 0);
+    const auto materialized = scene.materialize();
+    for (std::size_t instance = 0; instance < definitions.size(); ++instance) {
+        const auto& definition = definitions[instance];
+        assert(scene.parametric_definition(instance) != nullptr);
+        assert(scene.point_count(instance) == definition.sample_count);
+        assert(materialized.bodies[instance].faces.empty());
+        const auto points = scene.points(instance);
+        for (std::size_t i = 0; i < definition.sample_count; ++i) {
+            exact(points[i], definition.evaluate(i));
+            exact(scene.point(instance, i), points[i]);
+            exact(materialized.bodies[instance].vertices[i], points[i]);
+        }
+        const std::array<std::size_t, 6> indices{definition.sample_count - 1, 0, 1, 3, 1, 0};
+        std::array<Point3D, indices.size()> batch;
+        std::array<Point3D, indices.size()> direct;
+        scene.points(instance, indices, batch);
+        definition.evaluate(indices, direct);
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            exact(batch[i], direct[i]);
+            exact(batch[i], definition.evaluate(indices[i]));
+        }
+    }
+
+    // Creating a 16-million-sample curve retains the same metadata allocation
+    // as a two-sample curve. The sampled bank stays empty even after reads.
+    const std::array small{ParametricCurveDefinition::line({0, 0, 0}, {1, 2, 3}, 2)};
+    const std::array large{ParametricCurveDefinition::line({0, 0, 0}, {1, 2, 3},
+        ParametricCurveDefinition::maximum_samples)};
+    const auto sparse = CurveMemoryScene::from_parametric(small);
+    auto dense = CurveMemoryScene::from_parametric(large);
+    assert(sparse.stats().resident_bytes == dense.stats().resident_bytes);
+    assert(dense.stats().parametric_definition_bytes == sizeof(ParametricCurveDefinition));
+    assert(dense.stats().logical_point_bytes == ParametricCurveDefinition::maximum_samples * sizeof(Point3D));
+    assert(dense.stats().ordinary_shared_bytes > dense.stats().resident_bytes * 1000);
+    assert(dense.stats().raw_policy_bytes > dense.stats().resident_bytes * 1000);
+    exact(dense.point(0, large[0].sample_count - 1), Point3D{1, 2, 3});
+    assert(dense.bank().curve_count() == 0 && dense.stats().cache_bytes == 0);
+    const std::array duplicateLarge{large[0], large[0]};
+    assert(CurveMemoryScene::from_parametric(duplicateLarge).stats().parametric_shapes == 1);
+    auto overLimit = large[0];
+    overLimit.control_points[1].z = 4.0;
+    const std::array tooManySamples{large[0], overLimit};
+    throws<std::length_error>([&] { (void)CurveMemoryScene::from_parametric(tooManySamples); });
+    const auto shared = dense.add_instance(0, {}, "Shared large definition");
+    throws<std::length_error>([&] { dense.revise_parametric(shared, small[0]); });
+    assert(dense.stats().parametric_shapes == 1);
+    assert(dense.shape_id(shared) == dense.shape_id(0));
+    const auto empty = CurveMemoryScene::from_parametric({});
+    assert(empty.stats().parametric_shapes == 0 && empty.instance_count() == 0);
+}
+
+void parametric_placement_edits_and_revision() {
+    const std::array definitions{ParametricCurveDefinition::cubic_bezier(
+        {-0.0, 0, 0}, {1, 2, 0}, {3, 4, 0}, {5, 6, -0.0}, 17)};
+    auto scene = CurveMemoryScene::from_parametric(definitions);
+    const auto placed = scene.add_instance(0, CurveMemoryAffine::translation(10, 20, 30), "Placed curve");
+    scene.set_point(0, 3, {1, 1, 1});
+    scene.set_point(placed, 3, {2, 3, 4});
+    scene.add_relation(0, placed);
+    exact(scene.point(placed, 3), Point3D{12, 23, 34});
+    exact(scene.point(0, 3), Point3D{1, 1, 1});
+    const std::array<std::size_t, 4> indices{16, 3, 0, 3};
+    std::array<Point3D, indices.size()> output;
+    scene.points(placed, indices, output);
+    for (std::size_t i = 0; i < indices.size(); ++i) exact(output[i], scene.point(placed, indices[i]));
+    scene.set_point(placed, 3, definitions[0].evaluate(3));
+    assert(scene.stats().overrides == 1);
+
+    const auto originalShape = scene.shape_id(0);
+    const auto revised = ParametricCurveDefinition::line({-2, -3, -4}, {3, 4, 5}, 5);
+    scene.revise_parametric(0, revised);
+    assert(scene.shape_id(0) != originalShape && scene.shape_id(placed) == originalShape);
+    assert(scene.stats().parametric_shapes == 2);
+    assert(scene.stats().overrides == 0);
+    assert(scene.point_count(0) == 5 && scene.point_count(placed) == 17);
+    exact(scene.point(0, 0), revised.evaluate(0));
+    const auto oldPoint = definitions[0].evaluate(3);
+    exact(scene.point(placed, 3), Point3D{oldPoint.x + 10, oldPoint.y + 20, oldPoint.z + 30});
+    assert(scene.relations().size() == 1);
+
+    const auto revisionShape = scene.shape_id(0);
+    const auto allocated = scene.stats().resident_bytes;
+    for (int i = 0; i < 100; ++i) {
+        auto next = revised;
+        next.control_points[1].z += i;
+        scene.revise_parametric(0, next);
+        assert(scene.shape_id(0) == revisionShape);
+        assert(scene.stats().resident_bytes == allocated);
+        assert(scene.stats().parametric_shapes == 2);
+    }
+    // Passing the retained definition back is safe and clears sparse edits;
+    // revising an identical shared definition does not consume another shape.
+    scene.set_point(0, 0, {99, 99, 99});
+    scene.revise_parametric(0, *scene.parametric_definition(0));
+    assert(scene.stats().overrides == 0);
+    const auto clone = scene.add_instance(0, {}, "Unchanged revision");
+    scene.revise_parametric(clone, *scene.parametric_definition(0));
+    assert(scene.shape_id(clone) == scene.shape_id(0));
+    assert(scene.stats().parametric_shapes == 2);
+    const auto expanded = scene.materialize();
+    for (std::size_t body = 0; body < expanded.bodies.size(); ++body) {
+        for (std::size_t i = 0; i < expanded.bodies[body].vertices.size(); ++i) {
+            exact(expanded.bodies[body].vertices[i], scene.point(body, i));
+        }
+    }
+    const auto imported = CurveMemoryScene::from_document(expanded);
+    assert(imported.parametric_definition(0) == nullptr);
+    exact_document(expanded, imported.materialize());
+}
+
+void invalid_parametric_inputs() {
+    const auto line = ParametricCurveDefinition::line({0, 0, 0}, {1, 2, 3}, 5);
+    throws<std::invalid_argument>([&] { (void)ParametricCurveDefinition::line({}, {}, 1); });
+    throws<std::length_error>([&] {
+        (void)ParametricCurveDefinition::line({}, {}, ParametricCurveDefinition::maximum_samples + 1);
+    });
+    throws<std::invalid_argument>([&] {
+        (void)ParametricCurveDefinition::circle({}, {1, 0, 0}, {0, 1, 0}, 1, 2);
+    });
+    throws<std::invalid_argument>([&] {
+        (void)ParametricCurveDefinition::circle({}, {2, 0, 0}, {0, 1, 0}, 1, 8);
+    });
+    throws<std::invalid_argument>([&] {
+        (void)ParametricCurveDefinition::circle({}, {1, 0, 0}, {1, 0, 0}, 1, 8);
+    });
+    for (const auto radius : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+        throws<std::invalid_argument>([&] {
+            (void)ParametricCurveDefinition::circle({}, {1, 0, 0}, {0, 1, 0}, radius, 8);
+        });
+    }
+    throws<std::invalid_argument>([&] {
+        (void)ParametricCurveDefinition::circle({}, {1, 0, 0}, {0, 1, 0},
+            std::numeric_limits<double>::max(), 8);
+    });
+    auto invalid = line;
+    invalid.kind = static_cast<ParametricCurveKind>(100);
+    throws<std::invalid_argument>([&] { invalid.validate(); });
+    invalid = line;
+    invalid.control_points[0].x = std::numeric_limits<double>::quiet_NaN();
+    throws<std::invalid_argument>([&] { invalid.validate(); });
+    const std::array invalidDefinitions{invalid};
+    throws<std::invalid_argument>([&] { (void)CurveMemoryScene::from_parametric(invalidDefinitions); });
+    throws<std::out_of_range>([&] { (void)line.evaluate(5); });
+    const std::array<std::size_t, 3> badIndices{0, 1, 5};
+    std::array<Point3D, 3> output{Point3D{1, 2, 3}, Point3D{4, 5, 6}, Point3D{-0.0, 8, 9}};
+    const auto unchanged = output;
+    throws<std::out_of_range>([&] { line.evaluate(badIndices, output); });
+    throws<std::invalid_argument>([&] { line.evaluate({}, output); });
+    const std::array definitions{line};
+    auto scene = CurveMemoryScene::from_parametric(definitions);
+    throws<std::out_of_range>([&] { scene.points(0, badIndices, output); });
+    throws<std::invalid_argument>([&] { scene.points(0, {}, output); });
+    for (std::size_t i = 0; i < output.size(); ++i) exact(output[i], unchanged[i]);
+    throws<std::invalid_argument>([&] { scene.revise_parametric(0, invalid); });
+    throws<std::out_of_range>([&] { scene.revise_parametric(1, line); });
+    throws<std::out_of_range>([&] { scene.set_point(0, 5, {}); });
+    throws<std::out_of_range>([&] { (void)scene.parametric_definition(1); });
+    exact(scene.point(0, 4), line.evaluate(4));
+    auto imported = CurveMemoryScene::from_document(adaptivecad::tool::make_box_scene_document());
+    throws<std::invalid_argument>([&] { imported.revise_parametric(0, line); });
+    assert(imported.parametric_definition(0) == nullptr);
+
+    const double maximum = std::numeric_limits<double>::max();
+    const auto extreme = ParametricCurveDefinition::line({-maximum, -0.0, 0}, {maximum, 0, 0}, 3);
+    assert(extreme.evaluate(1).x == 0 && std::isfinite(extreme.evaluate(1).x));
+}
+
 } // namespace
 
 int main() {
@@ -387,4 +582,7 @@ int main() {
     total_scene_cost_selection();
     invalid_inputs();
     native_geometry_and_export();
+    parametric_evaluation_and_retention();
+    parametric_placement_edits_and_revision();
+    invalid_parametric_inputs();
 }
