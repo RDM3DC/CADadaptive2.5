@@ -141,7 +141,7 @@ def main():
         "input_sha256": {str(source.resolve()): hashlib.sha256(source.read_bytes()).hexdigest()
                          for source in options.input},
         "repeats_per_configuration": options.repeats,
-        "measurement_note": "Every run is a fresh process. Policy and access order rotate between repeats. All policies, budgets and access modes use identical deterministic requests and edit chronology; checksums and every returned coordinate are verified. LRU/ARP use equal total cache byte caps including metadata; effective decoded capacities may differ. Min/max are retained, and small differences within run spread do not establish improvement.",
+        "measurement_note": "Every run is a fresh process. Variant order reverses on alternating repeats, so both individual and batch LRU/ARP pairs alternate which policy runs first. All policies, budgets and access modes use identical deterministic requests and edit chronology; checksums and every returned coordinate are verified. LRU/ARP use equal total cache byte caps including metadata; effective decoded capacities may differ. Min/max are retained, and small differences within run spread do not establish improvement.",
         "timing_note": "Latency units are identical chunks of at most 512 reads, not one call versus one batch. Batch locality can change decoder lookup count. Plans and exact source checks are outside read timing. Edit times and full trace elapsed times are reported separately. No batch crosses an edit. Single traces start cold. Raw and parametric paths bypass decoded caches.",
         "memory_note": "Windows working set/private commit or Linux RSS are child process counters. Steady source_released precedes trace buffers. Peaks include construction and source overlap. No heap trim is forced. Synthetic sampled/parametric curves are the same definitions and do not predict imported CAD savings.",
         "configurations": [],
@@ -161,9 +161,7 @@ def main():
                     output["configurations"].append(entry)
                     expected = None
                     for repeat in range(options.repeats):
-                        ordered = variants[repeat % len(variants):] + variants[:repeat % len(variants)]
-                        if repeat % 2:
-                            ordered.reverse()
+                        ordered = list(reversed(variants)) if repeat % 2 else variants
                         for policy, access, storage in ordered:
                             variant = f"{storage if storage == 'raw' else policy}-{access}"
                             command = [str(executable), "--curve-memory-workload", *fixture,
