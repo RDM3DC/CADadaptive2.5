@@ -107,3 +107,80 @@ Its `complete` field stays false if a child fails. The runner verifies individua
 and batch coordinate checksums, ordered trace/edit checksums, and matching
 encoded representations in the cache-only comparison. It also compares generated
 sampled and parametric outputs when both models are selected in the same run.
+
+## Measured native result
+
+The validation bundle records three repetitions in fresh Windows Release
+processes, with LRU/ARP execution order reversed on alternating repetitions.
+Generated fixtures contain 1,048,576 samples from four line/Bezier definitions.
+Every trace performs 65,536 ordered reads, with 16 independent sparse edits in
+the mixed and shifting-region traces. These are controlled memory-engine
+experiments, not measurements of GUI navigation or large production assemblies.
+
+For the mixed trace at a 256 KiB retained-cache cap:
+
+| Representation | Source-released process RAM (MiB) | Retained scene estimate (bytes) | Individual reads (ms) | Batched reads (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Forced raw samples | 28.26 | 25,168,008 | 1.2121 | 0.4868 |
+| Compressed samples, LRU | 18.29 | 13,565,642 | 94.3261 | 93.5912 |
+| Compressed samples, ARP | 18.29 | 13,565,642 | 88.8784 | 92.4881 |
+| Retained definitions, default LRU setting | 4.21 | 2,467 | 2.0589 | 1.6085 |
+
+RAM and read values are medians of three runs; MiB means 1,048,576 bytes. The
+scene estimate is before reads, so compressed rows have not yet allocated their
+bounded decoded cache. Full-cache estimates and post-read counters are in the
+JSON. Source-released process RAM includes allocator-retained memory and process
+overhead. Median peak working sets, including construction/read buffers, were
+52.27 MiB for raw samples, 42.31 MiB for compressed samples, and 8.10 MiB for
+retained definitions. The last row bypasses the decoded cache entirely.
+
+Retained definitions reduce source-released process RAM by about 85.1% on this
+fixture. Their reads still take longer than raw array reads. The result comes
+from keeping authoritative geometry definitions and does not predict savings
+for arbitrary imported vertices.
+
+ARP/LRU median read-time ratios (below 1 favors ARP):
+
+| Trace | 64 KiB individual | 64 KiB batch | 256 KiB individual | 256 KiB batch |
+| --- | ---: | ---: | ---: | ---: |
+| Mixed edits/scans | 1.043 | 1.015 | 0.942 | 0.988 |
+| Shifting active region | 1.477 | 1.188 | 1.338 | 1.022 |
+| Random | 1.019 | 1.021 | 0.965 | 0.942 |
+| Sequential scan | 1.389 | 0.963 | 1.281 | 1.097 |
+| Repeated hot reads | 1.461 | 1.024 | 1.487 | 1.019 |
+
+At 256 KiB, ARP retains 41 decoded blocks and 8,192 controller bytes; LRU retains
+42 decoded blocks and no controller allocation. Their full retained cache costs
+are 261,736 and 259,728 bytes respectively, both below 262,144 bytes. The mixed
+individual trace decoded 52,018 blocks with ARP and 53,077 with LRU. Its 5.8%
+read-time improvement is useful but limited to this measured configuration;
+the 64 KiB mixed case regresses, and other individual traces regress by up to
+48.7%. LRU therefore remains the default. No native 28–30% general speedup is
+claimed from the earlier Python trial.
+
+The imported Benchy control also runs the mixed trace at 256 KiB. Both cache
+settings select one raw curve, allocate zero cache/controller bytes, and perform
+zero decodes. Individual LRU/ARP process RAM medians were both 22.70 MiB; read
+medians were 1.1910/1.2231 ms, with overlapping ranges. Batch medians were
+0.4478/0.4380 ms. These differences are not an ARP gain because the cache is
+bypassed. Forced-raw controls are included in the JSON.
+
+## Published validation
+
+- [Complete v3 validation JSON](../validation/curve-memory/v3-validation.json):
+  300 generated-model runs and 18 imported-Benchy runs, all in isolated processes;
+  three repetitions per configuration, individual/batch exact coordinate and
+  edit-replay checks, and the full timing/RAM/counter records.
+- [Source manifest](../validation/curve-memory/v3-source-manifest.json):
+  code commit `f7b4d5154c58b0bf2a7b019e10d5201700010ae5`, executable SHA-256,
+  and hashes for every source/header and benchmark runner.
+- All 23 standalone review-branch CTests passed with optimized-build assertions
+  active. The updated workspace passed all 11 curve-memory CTests. Fourteen
+  invalid-option/output-clobber checks and eight requested-policy selection
+  checks at 0, 1, 65,536, and 262,144-byte caps also passed.
+
+The review branch extends the published v2 prototype. Other unpublished
+civil/UI/geometry workspace work is outside this branch. Local absolute path
+prefixes are removed before publication; numeric measurements and checksums are
+preserved. The Benchy source model itself is not distributed. Earlier exploratory
+or interrupted benchmark runs are excluded from the published evidence.
